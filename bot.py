@@ -1,7 +1,6 @@
 import praw
 from telegram import Bot, Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import dropbox
 import json
 import os
 from threading import Thread
@@ -22,75 +21,6 @@ REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
 REDDIT_SECRET = os.getenv("REDDIT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-DROPBOX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN")
-ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")  # ID de l'administrateur Telegram
-
-# Initialisation de Dropbox
-dropbox_client = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
-
-# Fonction pour charger config.json depuis Dropbox
-def load_config_from_dropbox():
-    try:
-        logger.info("Tentative de téléchargement de config.json depuis Dropbox.")
-        _, res = dropbox_client.files_download("/config.json")
-        config = json.loads(res.content)
-        logger.info("Configuration chargée avec succès depuis Dropbox.")
-
-        # Validation des clés dans la configuration
-        if not all(key in config for key in ["subreddits", "telegram_chat_id", "admin_id"]):
-            raise ValueError("Certaines clés manquent dans config.json.")
-        return config
-    except Exception as e:
-        logger.error(f"Erreur lors du chargement de config.json : {e}")
-        send_admin_alert(f"Erreur critique : Impossible de charger config.json.\n\n{e}")
-        raise
-
-# Charger la configuration
-config = load_config_from_dropbox()
-SUBREDDITS = config["subreddits"]
-TELEGRAM_CHAT_ID = config["telegram_chat_id"]
-
-# Initialisation de Reddit et Telegram
-reddit = praw.Reddit(
-    client_id=REDDIT_CLIENT_ID,
-    client_secret=REDDIT_SECRET,
-    user_agent=REDDIT_USER_AGENT,
-)
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).connection_pool_size(100).request_timeout(60).build()
-telegram_bot = application.bot
-
-# Chemins de sauvegarde JSON
-LOGS_FILE = "/logs.json"
-POSTS_FILE = "/posts.json"
-
-# Initialisation des fichiers sur Dropbox
-def init_dropbox_file(path):
-    try:
-        dropbox_client.files_get_metadata(path)
-        logger.info(f"Fichier {path} trouvé dans Dropbox.")
-    except dropbox.exceptions.ApiError:
-        dropbox_client.files_upload(json.dumps([]).encode(), path)
-        logger.info(f"Fichier {path} créé dans Dropbox.")
-
-init_dropbox_file(LOGS_FILE)
-init_dropbox_file(POSTS_FILE)
-
-# Lecture/Écriture sur Dropbox
-def read_from_dropbox(path):
-    try:
-        _, res = dropbox_client.files_download(path)
-        logger.info(f"Lecture réussie depuis {path} dans Dropbox.")
-        return json.loads(res.content)
-    except Exception as e:
-        logger.error(f"Erreur lors de la lecture de {path} dans Dropbox : {e}")
-        return []
-
-def write_to_dropbox(path, data):
-    try:
-        dropbox_client.files_upload(json.dumps(data).encode(), path, mode=dropbox.files.WriteMode.overwrite)
-        logger.info(f"Écriture réussie dans {path} sur Dropbox.")
-    except Exception as e:
-        logger.error(f"Erreur lors de l'écriture dans {path} sur Dropbox : {e}")
 
 # Fonction pour envoyer une alerte à l'administrateur Telegram
 def send_admin_alert(message):
@@ -100,34 +30,47 @@ def send_admin_alert(message):
     except Exception as e:
         logger.error(f"Erreur lors de l'envoi de l'alerte à l'administrateur : {e}")
 
-# Archivage quotidien des logs
-def archive_logs():
+# Fonction pour charger config.json localement
+def load_config_from_local():
+    config_path = "./config.json"  # Chemin local du fichier config.json
     try:
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        archive_path = f"/logs/{date_str}_logs.json"
-        _, res = dropbox_client.files_download(LOGS_FILE)
-        dropbox_client.files_upload(res.content, archive_path, mode=dropbox.files.WriteMode.overwrite)
-        logger.info(f"Logs archivés pour la date {date_str}.")
+        logger.info("Tentative de chargement de config.json depuis le serveur.")
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        # Validation des clés dans la configuration
+        if not all(key in config for key in ["subreddits", "telegram_chat_id", "admin_id"]):
+            raise ValueError("Certaines clés manquent dans config.json.")
+        
+        logger.info("Configuration chargée avec succès depuis le serveur.")
+        return config
+    except json.JSONDecodeError as e:
+        logger.error(f"Erreur JSON dans config.json : {e}")
+        send_admin_alert(f"Erreur JSON dans config.json : {e}")
+        raise
+    except FileNotFoundError as e:
+        logger.error(f"Le fichier config.json est introuvable : {e}")
+        send_admin_alert(f"Erreur critique : Fichier config.json introuvable.\n\n{e}")
+        raise
     except Exception as e:
-        logger.error(f"Erreur lors de l'archivage des logs : {e}")
-        send_admin_alert(f"Erreur critique : Impossible d'archiver les logs.\n\n{e}")
+        logger.error(f"Erreur lors du chargement de config.json : {e}")
+        send_admin_alert(f"Erreur critique : Impossible de charger config.json.\n\n{e}")
+        raise
 
-# Planification de l'archivage quotidien des logs
-def schedule_log_archiving():
-    from time import sleep
-    from threading import Thread
-    import schedule
+# Charger la configuration
+config = load_config_from_local()
+SUBREDDITS = config["subreddits"]
+TELEGRAM_CHAT_ID = config["telegram_chat_id"]
+ADMIN_TELEGRAM_ID = config["admin_id"]
 
-    def archive_logs_job():
-        archive_logs()
-
-    def run_schedule():
-        while True:
-            schedule.run_pending()
-            sleep(60)
-
-    schedule.every().day.at("00:00").do(archive_logs_job)
-    Thread(target=run_schedule, daemon=True).start()
+# Initialisation de Reddit et Telegram
+reddit = praw.Reddit(
+    client_id=REDDIT_CLIENT_ID,
+    client_secret=REDDIT_SECRET,
+    user_agent=REDDIT_USER_AGENT,
+)
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).connection_pool_size(100).request_timeout(60).build()
+telegram_bot = application.bot
 
 # Envoi des médias avec retries
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
@@ -159,7 +102,7 @@ async def send_media(chat_id, submission):
 # Fonction principale pour surveiller Reddit
 def monitor_reddit():
     logger.info("Démarrage de la surveillance des subreddits.")
-    posted_ids = set(read_from_dropbox(POSTS_FILE))
+    posted_ids = set()
 
     while True:
         try:
@@ -170,7 +113,6 @@ def monitor_reddit():
                         if hasattr(submission, "post_hint") and submission.post_hint in ["image", "hosted:video", "rich:video", "link"]:
                             asyncio.run(send_media(TELEGRAM_CHAT_ID, submission))
                         posted_ids.add(submission.id)
-                        write_to_dropbox(POSTS_FILE, list(posted_ids))
         except Exception as e:
             logger.error(f"Erreur globale lors de la surveillance de Reddit : {e}")
             send_admin_alert(f"Erreur critique lors de la surveillance Reddit :\n\n{e}")
@@ -198,7 +140,7 @@ async def add_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subreddit = context.args[0]
     if subreddit not in SUBREDDITS:
         SUBREDDITS.append(subreddit)
-        update_config_on_dropbox()
+        update_config_to_local()
         await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été ajouté avec succès !")
     else:
         await update.message.reply_text(f"Le subreddit `{subreddit}` est déjà surveillé.")
@@ -213,7 +155,7 @@ async def remove_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subreddit = context.args[0]
     if subreddit in SUBREDDITS:
         SUBREDDITS.remove(subreddit)
-        update_config_on_dropbox()
+        update_config_to_local()
         await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été supprimé avec succès !")
     else:
         await update.message.reply_text(f"Le subreddit `{subreddit}` n'est pas surveillé.")
@@ -226,16 +168,18 @@ async def list_subreddits(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📜 Liste des subreddits surveillés :\n\n{', '.join(SUBREDDITS)}"
     )
 
-# Mise à jour de la configuration sur Dropbox
-def update_config_on_dropbox():
+# Fonction pour mettre à jour config.json localement
+def update_config_to_local():
+    config_path = "./config.json"
     try:
         config_data = {
             "subreddits": SUBREDDITS,
             "telegram_chat_id": TELEGRAM_CHAT_ID,
             "admin_id": ADMIN_TELEGRAM_ID,
         }
-        write_to_dropbox("/config.json", config_data)
-        logger.info("Configuration mise à jour avec succès sur Dropbox.")
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(config_data, f, indent=4)
+        logger.info("Configuration mise à jour avec succès sur le serveur.")
     except Exception as e:
         logger.error(f"Erreur lors de la mise à jour de config.json : {e}")
         send_admin_alert(f"Erreur critique : Impossible de mettre à jour config.json.\n\n{e}")
@@ -248,14 +192,12 @@ def main():
     application.add_handler(CommandHandler("removesub", remove_subreddit))
     application.add_handler(CommandHandler("list", list_subreddits))
 
-    # Lancer la surveillance Reddit dans un thread séparé
+    # Lancer la
+
     logger.info("Démarrage de la surveillance Reddit.")
     Thread(target=monitor_reddit, daemon=True).start()
 
-    # Planifier l'archivage des logs quotidiennement
-    schedule_log_archiving()
-
-    # Démarrer l'application
+    # Démarrer l'application Telegram
     application.run_polling()
 
 if __name__ == "__main__":
