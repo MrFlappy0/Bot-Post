@@ -325,7 +325,6 @@ def reload_data():
     subreddits = initialize_subreddits_in_dropbox()
     logging.info("Données rechargées depuis Dropbox.")
 
-from telegram.ext import Updater, CommandHandler
 
 def start(update, context):
     """
@@ -348,8 +347,8 @@ def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, parse_mode="Markdown")
 
 # Ajout du gestionnaire pour la commande /start
-updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-dispatcher = updater.dispatcher
+application = Application(token=TELEGRAM_TOKEN, use_context=True)
+dispatcher = application.dispatcher
 dispatcher.add_handler(CommandHandler("start", start))
 def help_command(update, context):
     """
@@ -398,6 +397,14 @@ def reload_command(update, context):
 
 # Ajout du gestionnaire pour la commande /reload
 dispatcher.add_handler(CommandHandler("reload", reload_command))
+
+def clean_temp_command(update, context):
+    """
+    Commande pour nettoyer manuellement le répertoire temporaire.
+    """
+    clean_temp_directory()
+    context.bot.send_message(chat_id=update.effective_chat.id, text="🧹 Répertoire temporaire nettoyé.")
+    logging.info("Commande de nettoyage du répertoire temporaire exécutée.")
 
 if __name__ == "__main__":
     try:
