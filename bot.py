@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_fixed
 import time
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
+import logging
+import time
 
 TEMP_DIR = "temp_files"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -53,6 +55,34 @@ logging.basicConfig(
     ]
 )
 
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+
+class ThrottleFilter(logging.Filter):
+    def __init__(self, name, min_interval):
+        super().__init__(name)
+        self.last_logged_time = 0
+        self.min_interval = min_interval  # Intervalle minimal en secondes
+
+    def filter(self, record):
+        current_time = time.time()
+        if "HTTP Request: POST" in record.getMessage():
+            if current_time - self.last_logged_time < self.min_interval:
+                return False  # Ne pas afficher le log
+            self.last_logged_time = current_time
+        return True
+
+# Ajouter le filtre au logger principal
+logger = logging.getLogger()
+logger.addFilter(ThrottleFilter(name="ThrottleFilter", min_interval=180))  # 180 secondes = 3 minutes
+
 # Variables globales
 sent_posts = set()
 subscribers = {}
@@ -62,6 +92,20 @@ failed_queue = []  # File d'attente pour les envois échoués
 TEMP_DIR = "temp_files"  # Répertoire temporaire pour stocker les fichiers téléchargés
 os.makedirs(TEMP_DIR, exist_ok=True)  # Assurez-vous que le répertoire existe
 
+class ThrottleFilter(logging.Filter):
+    def __init__(self, name, min_interval):
+        super().__init__(name)
+        self.last_logged_time = 0
+        self.min_interval = min_interval  # Intervalle minimal en secondes
+
+    def filter(self, record):
+        current_time = time.time()
+        if "HTTP Request: POST" in record.getMessage():
+            if current_time - self.last_logged_time < self.min_interval:
+                return False  # Ne pas afficher le log
+            self.last_logged_time = current_time
+        return True
+    
 
 def initialize_subreddits_in_dropbox():
     """
@@ -154,7 +198,7 @@ def escape_markdown(text):
 def fetch_and_send_new_posts():
     """
     Récupère les nouveaux posts des subreddits configurés, traite les médias et les envoie aux abonnés.
-    Journalise chaque étape du processus.
+    Journalise chaque étape pour le débogage.
     """
     if not subreddits:
         logging.error("❌ Aucun subreddit configuré. Vérifiez le fichier /subreddits.json.")
@@ -197,25 +241,30 @@ def fetch_and_send_new_posts():
             logging.info("📥 Téléchargement terminé.")
 
             # Traiter les téléchargements
-            for submission in posts:
-                if submission.id in downloads and downloads[submission.id]:
-                    filepath = downloads[submission.id]
-                    if os.path.getsize(filepath) > 50 * 1024 * 1024:  # Si fichier > 50MB, compresser
-                        filepath = compress_file(filepath)
+            for submission_id, filepath in downloads.items():
+                if not filepath:
+                    logging.error(f"❌ Le fichier pour le post {submission_id} n'a pas pu être téléchargé.")
+                    continue
 
-                    media_type = "image" if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')) else "video"
-                    for chat_id in subscribers.keys():
-                        send_media_to_telegram(chat_id, filepath, media_type)
+                if os.path.getsize(filepath) > 50 * 1024 * 1024:  # Si fichier > 50MB, compresser
+                    filepath = compress_file(filepath)
 
-                    # Mettre à jour les statistiques
-                    update_temporal_stats(submission, media_type)
+                media_type = "image" if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')) else "video"
+                for chat_id in subscribers.keys():
+                    success = send_media_to_telegram(chat_id, filepath, media_type)
+                    if success:
+                        logging.info(f"✅ Média {submission_id} envoyé avec succès à {chat_id}.")
+                    else:
+                        logging.error(f"❌ Échec de l'envoi du média {submission_id} à {chat_id}.")
 
-                    # Supprimer le fichier temporaire
-                    delete_file(filepath)
+                # Mettre à jour les statistiques
+                update_temporal_stats(submission_id, media_type)
 
-                    # Marquer comme envoyé
-                    sent_posts.add(submission.id)
-                    logging.info(f"✅ Post {submission.id} envoyé avec succès.")
+                # Supprimer le fichier temporaire
+                delete_file(filepath)
+
+                # Marquer comme envoyé
+                sent_posts.add(submission_id)
 
             # Sauvegarder les données après traitement
             save_data()
@@ -224,6 +273,25 @@ def fetch_and_send_new_posts():
         except Exception as e:
             logging.error(f"❌ Erreur lors de la récupération ou du traitement des posts pour : {subreddit_name} - {e}")
 
+def send_media_to_telegram(chat_id, filepath, media_type):
+    """
+    Envoie une image ou une vidéo à un utilisateur Telegram et journalise les résultats.
+    """
+    try:
+        logging.info(f"Tentative d'envoi du média {filepath} ({media_type}) au chat {chat_id}")
+        if media_type == "image":
+            with open(filepath, "rb") as file:
+                bot.send_photo(chat_id=chat_id, photo=file)
+        elif media_type == "video":
+            with open(filepath, "rb") as file:
+                bot.send_video(chat_id=chat_id, video=file)
+        logging.info(f"✅ Média envoyé avec succès au chat {chat_id} : {filepath}")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Erreur lors de l'envoi du média {filepath} à {chat_id} : {e}")
+        failed_queue.append({"chat_id": chat_id, "filepath": filepath, "media_type": media_type})
+        stats["failed"] = len(failed_queue)
+        return False
 
 def is_media_post(submission):
     """
