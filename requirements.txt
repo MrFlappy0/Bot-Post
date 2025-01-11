@@ -3,3 +3,4 @@ python-telegram-bot==20.3
 dropbox==11.36.0
 requests==2.31.0
 tenacity==8.2.2
+schedule==1.1.0
