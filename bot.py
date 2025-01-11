@@ -231,10 +231,11 @@ def is_media_post(submission):
     """
     try:
         valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm')
+        is_gallery = hasattr(submission, 'is_gallery') and submission.is_gallery
         is_valid = (
             submission.url.endswith(valid_extensions) or
             submission.url.startswith("https://v.redd.it") or
-            submission.is_gallery
+            is_gallery
         )
         if is_valid:
             logging.info(f"📸 Post {submission.id} contient un média supporté : {submission.url}")
@@ -244,8 +245,8 @@ def is_media_post(submission):
     except Exception as e:
         logging.error(f"❌ Erreur lors de la vérification du média pour le post {submission.id} : {e}")
         return False
-
-
+    
+    
 def download_media_parallel(posts):
     """
     Télécharge les médias de plusieurs posts en parallèle et journalise le progrès.
@@ -620,51 +621,13 @@ if __name__ == "__main__":
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
         application.add_error_handler(error_handler)
 
-        # Lancer un thread pour les rapports quotidiens
+        # Démarrer le rapport quotidien dans un thread séparé
         logging.info("🗓️ Démarrage de la planification des rapports quotidiens...")
         Thread(target=schedule_daily_report, daemon=True).start()
 
-        # Variables pour la boucle principale
-        last_reload = time.time()
-
-        # Démarrer l'écoute des commandes Telegram
-        logging.info("💬 Lancement du polling Telegram...")
-        Thread(target=application.run_polling, daemon=True).start()
-
-        # Boucle principale
-        while True:
-            try:
-                # Recharger les abonnés et subreddits toutes les 5 minutes
-                if time.time() - last_reload > 300:
-                    logging.info("♻️ Rechargement des abonnés et subreddits depuis Dropbox...")
-                    reload_data()
-                    last_reload = time.time()
-
-                # Récupérer et envoyer les nouveaux posts
-                fetch_and_send_new_posts()
-
-                # Réessayer les envois échoués
-                if failed_queue:
-                    logging.info(f"🔁 Réessai de {len(failed_queue)} envois échoués...")
-                    retry_failed_queue()
-
-                # Nettoyer les fichiers temporaires
-                clean_temp_directory()
-
-                # Sauvegarder les données régulièrement
-                save_data()
-
-            except KeyboardInterrupt:
-                logging.warning("🛑 Arrêt manuel détecté. Fermeture en cours...")
-                notify_admin("❌ Le bot a été arrêté manuellement.")
-                break
-
-            except Exception as e:
-                logging.error(f"⚠️ Erreur critique dans la boucle principale : {e}")
-                notify_admin(f"⚠️ Erreur critique dans la boucle principale : {e}")
-
-            # Pause entre les itérations pour limiter la charge
-            time.sleep(60)
+        # Démarrer l'écoute des commandes Telegram (dans le thread principal)
+        logging.info("💬 Démarrage de l'écoute des commandes Telegram via polling...")
+        application.run_polling()
 
     except Exception as e:
         logging.critical(f"🚨 Erreur fatale lors du démarrage : {e}")
