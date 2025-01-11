@@ -63,24 +63,24 @@ def initialize_subreddits_in_dropbox():
     Initialise les subreddits suivis par défaut dans Dropbox si le fichier n'existe pas ou est vide.
     """
     default_subreddits = [
-        "Nudes", "FantasticBreasts", "GoneWild", "cumsluts", "PetiteGoneWild", "RealGirls", 
-        "nsfw", "Amateur", "pregnantporn", "NSFW_GIF", "scrubsgonewild", "GoneWildPlus", 
+        "Nudes", "FantasticBreasts", "GoneWild", "cumsluts", "PetiteGoneWild", "RealGirls",
+        "nsfw", "Amateur", "pregnantporn", "NSFW_GIF", "scrubsgonewild", "GoneWildPlus",
         "NaughtyWives", "snapleaks", "pregnantonlyfans", "Nude_Selfie", "Puffies"
     ]
 
     try:
-        # Charger le fichier depuis Dropbox
+        # Tente de charger les subreddits depuis Dropbox
         _, res = dropbox_client.files_download(DROPBOX_FILE_PATH_SUBREDDITS)
         current_subreddits = json.loads(res.content.decode("utf-8"))
-        
+
         if not current_subreddits:  # Si le fichier est vide
             raise ValueError("Le fichier des subreddits est vide.")
-        
+
         logging.info("Les subreddits suivis ont été chargés depuis Dropbox.")
         return current_subreddits
 
     except (dropbox.exceptions.ApiError, ValueError, json.JSONDecodeError):
-        # Si le fichier n'existe pas ou est vide, on initialise les subreddits par défaut
+        # Si le fichier n'existe pas ou est vide, on initialise avec les subreddits par défaut
         logging.warning("Aucun fichier de subreddits trouvé ou fichier vide. Initialisation par défaut.")
         save_file_to_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, default_subreddits)
         return default_subreddits
@@ -95,7 +95,6 @@ def load_file_from_dropbox(file_path, default_data):
     except dropbox.exceptions.ApiError:
         logging.warning(f"Fichier {file_path} introuvable, création d'un nouveau.")
         return default_data
-
 def load_data():
     global sent_posts, subscribers, subreddits, stats
 

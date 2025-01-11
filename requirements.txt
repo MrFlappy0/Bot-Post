@@ -1,4 +1,4 @@
-praw==7.7.0
+praw==7.8.1
 python-telegram-bot==20.3
 dropbox==11.36.0
 requests==2.31.0
