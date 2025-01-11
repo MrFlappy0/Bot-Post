@@ -8,6 +8,7 @@ import asyncio
 import logging
 from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_fixed
+import requests
 
 # Configuration des logs
 logging.basicConfig(
@@ -69,23 +70,57 @@ reddit = praw.Reddit(
     client_secret=REDDIT_SECRET,
     user_agent=REDDIT_USER_AGENT,
 )
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).connection_pool_size(100).request_timeout(60).build()
+application = ApplicationBuilder()\
+    .token(TELEGRAM_TOKEN)\
+    .connection_pool_size(100)\
+    .connect_timeout(30)\
+    .read_timeout(60)\
+    .build()
 telegram_bot = application.bot
+
+# Fonction pour télécharger les médias localement
+def download_media(url, file_name):
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        with open(file_name, "wb") as file:
+            for chunk in response.iter_content(chunk_size=8192):
+                file.write(chunk)
+        logger.info(f"Média téléchargé avec succès : {file_name}")
+        return file_name
+    except Exception as e:
+        logger.error(f"Erreur lors du téléchargement du média {url} : {e}")
+        return None
 
 # Envoi des médias avec retries
 @retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
 async def send_media_with_retry(chat_id, submission):
     if hasattr(submission, "post_hint"):
+        media_file = None
+
+        # Gestion des images
         if submission.post_hint == "image":
-            await telegram_bot.send_photo(chat_id=chat_id, photo=submission.url)
-            logger.info(f"Image envoyée : {submission.id} - {submission.url}")
+            media_file = download_media(submission.url, f"./temp/{submission.id}.jpg")
+            if media_file:
+                await telegram_bot.send_photo(chat_id=chat_id, photo=open(media_file, "rb"))
+
+        # Gestion des vidéos
         elif submission.post_hint == "hosted:video" and hasattr(submission, "media"):
             video_url = submission.media["reddit_video"]["fallback_url"]
-            await telegram_bot.send_video(chat_id=chat_id, video=video_url)
-            logger.info(f"Vidéo envoyée : {submission.id} - {video_url}")
+            media_file = download_media(video_url, f"./temp/{submission.id}.mp4")
+            if media_file:
+                await telegram_bot.send_video(chat_id=chat_id, video=open(media_file, "rb"))
+
+        # Gestion des GIFs
         elif submission.post_hint in ["rich:video", "link"] and ".gif" in submission.url:
-            await telegram_bot.send_animation(chat_id=chat_id, animation=submission.url)
-            logger.info(f"GIF envoyé : {submission.id} - {submission.url}")
+            media_file = download_media(submission.url, f"./temp/{submission.id}.gif")
+            if media_file:
+                await telegram_bot.send_animation(chat_id=chat_id, animation=open(media_file, "rb"))
+
+        # Suppression du fichier local après l'envoi
+        if media_file:
+            os.remove(media_file)
+            logger.info(f"Fichier temporaire supprimé : {media_file}")
 
 # Gestion des envois avec délai
 async def send_media(chat_id, submission):
@@ -102,6 +137,7 @@ async def send_media(chat_id, submission):
 # Fonction principale pour surveiller Reddit
 def monitor_reddit():
     logger.info("Démarrage de la surveillance des subreddits.")
+    os.makedirs("./temp", exist_ok=True)  # Crée un dossier temporaire s'il n'existe pas
     posted_ids = set()
 
     while True:
@@ -126,74 +162,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Les posts sont publiés directement dans ce groupe ou cette conversation. Profitez-en !"
     )
 
-def is_admin(user_id):
-    return str(user_id) == str(ADMIN_TELEGRAM_ID)
-
-# Commandes pour gérer les subreddits
-async def add_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
-        return
-    if not context.args:
-        await update.message.reply_text("Veuillez fournir un subreddit à ajouter.")
-        return
-    subreddit = context.args[0]
-    if subreddit not in SUBREDDITS:
-        SUBREDDITS.append(subreddit)
-        update_config_to_local()
-        await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été ajouté avec succès !")
-    else:
-        await update.message.reply_text(f"Le subreddit `{subreddit}` est déjà surveillé.")
-
-async def remove_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
-        return
-    if not context.args:
-        await update.message.reply_text("Veuillez fournir un subreddit à supprimer.")
-        return
-    subreddit = context.args[0]
-    if subreddit in SUBREDDITS:
-        SUBREDDITS.remove(subreddit)
-        update_config_to_local()
-        await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été supprimé avec succès !")
-    else:
-        await update.message.reply_text(f"Le subreddit `{subreddit}` n'est pas surveillé.")
-
-async def list_subreddits(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
-        return
-    await update.message.reply_text(
-        f"📜 Liste des subreddits surveillés :\n\n{', '.join(SUBREDDITS)}"
-    )
-
-# Fonction pour mettre à jour config.json localement
-def update_config_to_local():
-    config_path = "./config.json"
-    try:
-        config_data = {
-            "subreddits": SUBREDDITS,
-            "telegram_chat_id": TELEGRAM_CHAT_ID,
-            "admin_id": ADMIN_TELEGRAM_ID,
-        }
-        with open(config_path, "w", encoding="utf-8") as f:
-            json.dump(config_data, f, indent=4)
-        logger.info("Configuration mise à jour avec succès sur le serveur.")
-    except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour de config.json : {e}")
-        send_admin_alert(f"Erreur critique : Impossible de mettre à jour config.json.\n\n{e}")
-
 # Fonction principale
 def main():
     logger.info("Initialisation de l'application Telegram.")
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("addsub", add_subreddit))
-    application.add_handler(CommandHandler("removesub", remove_subreddit))
-    application.add_handler(CommandHandler("list", list_subreddits))
 
-    # Lancer la
-
+    # Lancer la surveillance Reddit dans un thread séparé
     logger.info("Démarrage de la surveillance Reddit.")
     Thread(target=monitor_reddit, daemon=True).start()
 
