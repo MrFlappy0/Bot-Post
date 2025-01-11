@@ -81,6 +81,7 @@ telegram_bot = application.bot
 # Fonction pour télécharger les médias localement
 def download_media(url, file_name):
     try:
+        logger.info(f"Téléchargement du média depuis {url} vers {file_name}")
         response = requests.get(url, stream=True)
         response.raise_for_status()
         with open(file_name, "wb") as file:
@@ -134,21 +135,43 @@ async def send_media(chat_id, submission):
         logger.error(f"Erreur critique pour le média {submission.id} : {e}")
         send_admin_alert(f"Erreur critique lors de l'envoi du média : {submission.id}.\n\n{e}")
 
+
+def load_posted_ids(file_path="posted_ids.json"):
+    try:
+        if os.path.exists(file_path):
+            with open(file_path, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        else:
+            return set()
+    except Exception as e:
+        logger.error(f"Erreur lors du chargement de posted_ids : {e}")
+        return set()
+
+def save_posted_ids(posted_ids, file_path="posted_ids.json"):
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(list(posted_ids), f, indent=4)
+        logger.info(f"Liste des posted_ids mise à jour : {file_path}")
+    except Exception as e:
+        logger.error(f"Erreur lors de la sauvegarde de posted_ids : {e}")
+
 # Fonction principale pour surveiller Reddit
 def monitor_reddit():
     logger.info("Démarrage de la surveillance des subreddits.")
     os.makedirs("./temp", exist_ok=True)  # Crée un dossier temporaire s'il n'existe pas
-    posted_ids = set()
+    posted_ids = load_posted_ids()  # Charge les IDs des posts déjà envoyés
 
     while True:
         try:
             for subreddit in SUBREDDITS:
-                logger.debug(f"Vérification des nouveaux posts sur le subreddit : {subreddit}")
+                logger.info(f"Recherche des nouveaux posts dans le subreddit : {subreddit}")
                 for submission in reddit.subreddit(subreddit).new(limit=10):
                     if submission.id not in posted_ids:
+                        logger.info(f"Nouveau post trouvé : {submission.id} - {submission.title}")
                         if hasattr(submission, "post_hint") and submission.post_hint in ["image", "hosted:video", "rich:video", "link"]:
                             asyncio.run(send_media(TELEGRAM_CHAT_ID, submission))
                         posted_ids.add(submission.id)
+                        save_posted_ids(posted_ids)  # Sauvegarde après chaque envoi
         except Exception as e:
             logger.error(f"Erreur globale lors de la surveillance de Reddit : {e}")
             send_admin_alert(f"Erreur critique lors de la surveillance Reddit :\n\n{e}")
