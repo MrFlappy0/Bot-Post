@@ -12,6 +12,7 @@ from telegram.error import NetworkError, TelegramError
 from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_fixed
 import time
+from telegram.ext import Application, CommandHandler
 
 # Chargement des variables d'environnement (Railway)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
@@ -404,6 +405,18 @@ if __name__ == "__main__":
         logging.info("🔄 Chargement des données initiales...")
         load_data()
 
+        # Créer l'application Telegram
+        logging.info("🚀 Initialisation du bot Telegram...")
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+
+        # Ajouter les commandes utilisateur et administrateur
+        logging.info("⚙️ Ajout des commandes Telegram...")
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("help", help_command))
+        application.add_handler(CommandHandler("stats", stats_command))
+        application.add_handler(CommandHandler("reload", reload_command))
+        application.add_handler(CommandHandler("clean_temp", clean_temp_command))
+
         # Démarrer le rapport quotidien dans un thread séparé
         logging.info("🗓️ Démarrage de la planification du rapport quotidien.")
         Thread(target=schedule_daily_report, daemon=True).start()
@@ -411,7 +424,11 @@ if __name__ == "__main__":
         # Variables pour gestion dynamique
         last_reload = time.time()
 
-        # Boucle principale
+        # Lancer l'application Telegram dans un thread séparé
+        logging.info("💬 Démarrage de l'écoute des commandes Telegram...")
+        Thread(target=application.run_polling, daemon=True).start()
+
+        # Boucle principale pour la récupération des posts et autres tâches
         while True:
             try:
                 # Recharger les abonnés et subreddits toutes les 5 minutes
