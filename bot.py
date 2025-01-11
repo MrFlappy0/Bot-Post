@@ -15,6 +15,9 @@ from tenacity import retry, stop_after_attempt, wait_fixed
 import time
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
+TEMP_DIR = "temp_files"
+os.makedirs(TEMP_DIR, exist_ok=True)
+
 # Chargement des variables d'environnement (Railway)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
 REDDIT_SECRET = os.getenv("REDDIT_SECRET")
@@ -142,14 +145,94 @@ def save_data():
     save_file_to_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, subreddits)
     save_file_to_dropbox(DROPBOX_FILE_PATH_STATS, stats)
 
-# Téléchargement parallèle
+
+def escape_markdown(text):
+    """Échappe les caractères spéciaux Markdown."""
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return "".join(f"\\{char}" if char in escape_chars else char for char in text)
+
+def fetch_and_send_new_posts():
+    """
+    Récupère les nouveaux posts des subreddits configurés, traite les médias et les envoie aux abonnés.
+    Journalise chaque étape du processus.
+    """
+    for subreddit_name in subreddits:
+        try:
+            logging.info(f"🔍 Début de la récupération des posts pour le subreddit : {subreddit_name}")
+            subreddit = reddit.subreddit(subreddit_name)
+
+            # Récupération des derniers posts
+            posts = list(subreddit.new(limit=100))
+            logging.info(f"✅ {len(posts)} posts récupérés depuis le subreddit {subreddit_name}.")
+
+            # Téléchargement des médias
+            valid_posts = {
+                submission.id: "".join(
+                    c if c.isalnum() or c in (" ", "-", "_") else "_" for c in submission.title
+                ) + "." + submission.url.split(".")[-1]
+                for submission in posts if submission.id not in sent_posts and is_media_post(submission)
+            }
+            logging.info(f"🎞️ {len(valid_posts)} posts contenant des médias valides identifiés.")
+
+            downloads = download_media_parallel(valid_posts)
+            logging.info(f"📥 Téléchargement des médias terminé pour le subreddit {subreddit_name}.")
+
+            # Traitement des téléchargements
+            for submission in posts:
+                if submission.id in downloads and downloads[submission.id]:
+                    filepath = downloads[submission.id]
+                    if os.path.getsize(filepath) > 50 * 1024 * 1024:  # Compression si nécessaire
+                        filepath = compress_file(filepath)
+
+                    media_type = "image" if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')) else "video"
+                    for chat_id in subscribers.keys():
+                        send_media_to_telegram(chat_id, filepath, media_type)
+
+                    # Mise à jour des statistiques
+                    update_temporal_stats(submission, media_type)
+
+                    # Suppression du fichier temporaire
+                    delete_file(filepath)
+
+                    # Marquer le post comme envoyé
+                    sent_posts.add(submission.id)
+                    logging.info(f"✅ Post {submission.id} envoyé avec succès et marqué comme traité.")
+
+            # Sauvegarde des données après le traitement
+            save_data()
+            logging.info(f"📝 Données sauvegardées après le traitement des posts du subreddit {subreddit_name}.")
+
+        except Exception as e:
+            logging.error(f"❌ Erreur lors de la récupération ou du traitement des posts pour {subreddit_name} : {e}")
+
+
+def is_media_post(submission):
+    """
+    Vérifie si le post contient un média supporté (image, vidéo, GIF) et journalise les résultats.
+    """
+    try:
+        valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm')
+        is_valid = (
+            submission.url.endswith(valid_extensions) or
+            submission.url.startswith("https://v.redd.it") or
+            submission.is_gallery
+        )
+        if is_valid:
+            logging.info(f"📸 Post {submission.id} contient un média supporté : {submission.url}")
+        else:
+            logging.debug(f"🚫 Post {submission.id} ne contient pas de média valide : {submission.url}")
+        return is_valid
+    except Exception as e:
+        logging.error(f"❌ Erreur lors de la vérification du média pour le post {submission.id} : {e}")
+        return False
+
+
 def download_media_parallel(posts):
     """
-    Télécharge les médias de plusieurs posts en parallèle.
-    :param posts: Dictionnaire des posts {id: filename}.
-    :return: Dictionnaire {id: filepath ou None en cas d'échec}.
+    Télécharge les médias de plusieurs posts en parallèle et journalise le progrès.
     """
     results = {}
+    logging.info(f"📥 Début du téléchargement parallèle pour {len(posts)} médias.")
 
     def download(url, filename):
         try:
@@ -160,62 +243,34 @@ def download_media_parallel(posts):
                 for chunk in response.iter_content(chunk_size=8192):
                     file.write(chunk)
             results[url] = filepath
+            logging.info(f"✅ Téléchargement réussi : {url} -> {filepath}")
         except Exception as e:
-            logging.error(f"Erreur lors du téléchargement du média {url} : {e}")
+            logging.error(f"❌ Erreur lors du téléchargement du média {url} : {e}")
             results[url] = None
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         for post_id, filename in posts.items():
             executor.submit(download, reddit.submission(post_id).url, filename)
 
+    logging.info(f"📦 Téléchargement parallèle terminé.")
     return results
 
-def escape_markdown(text):
-    """Échappe les caractères spéciaux Markdown."""
-    escape_chars = r"_*[]()~`>#+-=|{}.!"
-    return "".join(f"\\{char}" if char in escape_chars else char for char in text)
 
-# Récupération et envoi des posts
-def fetch_and_send_new_posts():
-    for subreddit_name in subreddits:
-        subreddit = reddit.subreddit(subreddit_name)
-        logging.info(f"Récupération des posts pour le subreddit : {subreddit_name}")
-        posts = list(subreddit.new(limit=100))  # Limite raisonnable par itération
-
-        # Téléchargement parallèle des médias
-        downloads = download_media_parallel({
-            submission.id: "".join(
-                c if c.isalnum() or c in (" ", "-", "_") else "_" for c in submission.title
-            ) + "." + submission.url.split(".")[-1]
-            for submission in posts if submission.id not in sent_posts and is_media_post(submission)
-        })
-
-        # Traiter les téléchargements
-        for submission in posts:
-            if submission.id in downloads and downloads[submission.id]:
-                filepath = downloads[submission.id]
-                if os.path.getsize(filepath) > 50 * 1024 * 1024:  # Compression si nécessaire
-                    filepath = compress_file(filepath)
-
-                media_type = "image" if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')) else "video"
-                for chat_id in subscribers.keys():
-                    send_media_to_telegram(chat_id, filepath, media_type)
-
-                update_temporal_stats(submission, media_type)
-                delete_file(filepath)
-
-                sent_posts.add(submission.id)
-                save_data()
-
-# Statistiques et Nettoyage
 def update_temporal_stats(submission, media_type):
-    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    stats.setdefault("temporal", {}).setdefault(submission.subreddit.display_name, []).append({
-        "time": now,
-        "type": media_type,
-        "title": submission.title
-    })
-    save_file_to_dropbox(DROPBOX_FILE_PATH_STATS, stats)
+    """
+    Met à jour les statistiques temporelles pour un post et journalise l'opération.
+    """
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stats.setdefault("temporal", {}).setdefault(submission.subreddit.display_name, []).append({
+            "time": now,
+            "type": media_type,
+            "title": submission.title
+        })
+        save_file_to_dropbox(DROPBOX_FILE_PATH_STATS, stats)
+        logging.info(f"📊 Statistiques mises à jour pour le post {submission.id}.")
+    except Exception as e:
+        logging.error(f"❌ Erreur lors de la mise à jour des statistiques pour le post {submission.id} : {e}")
 
 
 def retry_failed_queue():
@@ -251,67 +306,70 @@ def schedule_daily_report():
         daily_report()
 def notify_admin(message):
     """
-    Envoie une notification à l'administrateur Telegram.
+    Envoie une notification à l'administrateur Telegram et journalise les résultats.
     """
+    logging.info(f"Tentative d'envoi de la notification à l'administrateur : {message}")
     try:
         bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
+        logging.info("Notification envoyée avec succès à l'administrateur.")
     except Exception as e:
-        logging.error(f"Erreur lors de la notification à l'administrateur : {e}")
-def is_media_post(submission):
-    """
-    Vérifie si le post contient un média supporté (image, vidéo, GIF).
-    """
-    valid_extensions = ('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm')
-    return (
-        submission.url.endswith(valid_extensions) or
-        submission.url.startswith("https://v.redd.it") or
-        submission.is_gallery
-    )
+        logging.error(f"Erreur lors de l'envoi de la notification à l'administrateur : {e}")
+
+
 def compress_file(filepath):
     """
-    Compresse un fichier volumineux au format Gzip.
+    Compresse un fichier volumineux au format Gzip et journalise les résultats.
     """
     compressed_filepath = filepath + ".gz"
     try:
+        logging.info(f"Compression du fichier : {filepath}")
         with open(filepath, "rb") as f_in, gzip.open(compressed_filepath, "wb") as f_out:
             f_out.writelines(f_in)
-        logging.info(f"Fichier compressé : {compressed_filepath}")
+        logging.info(f"Fichier compressé avec succès : {compressed_filepath}")
         return compressed_filepath
     except Exception as e:
         logging.error(f"Erreur lors de la compression du fichier {filepath} : {e}")
         return filepath
+
+
 def send_media_to_telegram(chat_id, filepath, media_type):
     """
-    Envoie une image ou une vidéo à un utilisateur Telegram.
+    Envoie une image ou une vidéo à un utilisateur Telegram et journalise les résultats.
     """
     try:
+        logging.info(f"Tentative d'envoi du média {filepath} ({media_type}) au chat {chat_id}")
         if media_type == "image":
             with open(filepath, "rb") as file:
                 bot.send_photo(chat_id=chat_id, photo=file)
         elif media_type == "video":
             with open(filepath, "rb") as file:
                 bot.send_video(chat_id=chat_id, video=file)
-        logging.info(f"Média envoyé à {chat_id} : {filepath}")
+        logging.info(f"Média envoyé avec succès au chat {chat_id} : {filepath}")
     except Exception as e:
         logging.error(f"Erreur lors de l'envoi du média {filepath} à {chat_id} : {e}")
         failed_queue.append({"chat_id": chat_id, "filepath": filepath, "media_type": media_type})
         stats["failed"] = len(failed_queue)
+
+
 def delete_file(filepath):
     """
-    Supprime un fichier du système.
+    Supprime un fichier du système et journalise les résultats.
     """
     try:
         if os.path.exists(filepath):
             os.remove(filepath)
-            logging.info(f"Fichier temporaire supprimé : {filepath}")
+            logging.info(f"Fichier supprimé avec succès : {filepath}")
         else:
-            logging.warning(f"Fichier non trouvé pour suppression : {filepath}")
+            logging.warning(f"Fichier introuvable pour suppression : {filepath}")
     except Exception as e:
         logging.error(f"Erreur lors de la suppression du fichier {filepath} : {e}")
+
+
 def daily_report():
     """
-    Génère un rapport quotidien des statistiques et l'envoie à l'administrateur.
+    Génère un rapport quotidien des statistiques et l'envoie à l'administrateur, avec journalisation détaillée.
     """
+    logging.info("Génération du rapport quotidien.")
     today = datetime.now().strftime("%Y-%m-%d")
     report_message = f"📊 Rapport quotidien ({today}):\n"
     report_message += f"Total médias envoyés : {stats['total']}\n"
@@ -323,16 +381,35 @@ def daily_report():
     for subreddit, count in stats.get("subreddits", {}).items():
         report_message += f"r/{subreddit} : {count} posts envoyés\n"
 
-    notify_admin(report_message)
+    try:
+        notify_admin(report_message)
+        logging.info("Rapport quotidien envoyé avec succès à l'administrateur.")
+    except Exception as e:
+        logging.error(f"Erreur lors de l'envoi du rapport quotidien : {e}")
+
 
 def reload_data():
+    """
+    Recharge les données depuis Dropbox et journalise les résultats.
+    """
     global subscribers, subreddits
-    subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
-    subreddits = initialize_subreddits_in_dropbox()
-    logging.info("Données rechargées depuis Dropbox.")
+    logging.info("Tentative de rechargement des données depuis Dropbox.")
+    try:
+        subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
+        subreddits = initialize_subreddits_in_dropbox()
+        logging.info("Données rechargées avec succès depuis Dropbox.")
+    except Exception as e:
+        logging.error(f"Erreur lors du rechargement des données depuis Dropbox : {e}")
+
 
 def split_message(message, max_length=4096):
-    return [message[i:i + max_length] for i in range(0, len(message), max_length)]
+    """
+    Divise un message long en plusieurs parties pour Telegram, avec journalisation.
+    """
+    logging.info("Division d'un message long pour l'envoi à Telegram.")
+    parts = [message[i:i + max_length] for i in range(0, len(message), max_length)]
+    logging.debug(f"Message divisé en {len(parts)} parties.")
+    return parts
 
 async def send_long_message(chat_id, message, context):
     for part in split_message(message):
@@ -369,7 +446,16 @@ async def main_tasks():
         await asyncio.sleep(60)
 
 async def start(update, context):
-    """Commande /start pour afficher un message d'accueil."""
+    """Commande /start pour afficher un message d'accueil et enregistrer l'utilisateur."""
+    chat_id = update.effective_chat.id
+    username = update.effective_user.username or "Utilisateur inconnu"
+
+    # Ajouter l'utilisateur aux abonnés si nécessaire
+    if chat_id not in subscribers:
+        subscribers[chat_id] = {"username": username, "joined": datetime.now().isoformat()}
+        save_data()  # Sauvegarder immédiatement après l'ajout
+        logging.info(f"Nouvel abonné ajouté : {username} (ID : {chat_id})")
+
     message = (
         "👋 **Bienvenue sur le Reddit Media Bot !**\n\n"
         "📌 **Fonctionnalités principales :**\n"
@@ -385,7 +471,7 @@ async def start(update, context):
         "\n💡 *Si vous avez des questions, contactez l'administrateur.*"
     )
     escaped_message = escape_markdown(message)
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=escaped_message, parse_mode="Markdown")
+    await context.bot.send_message(chat_id=chat_id, text=escaped_message, parse_mode="Markdown")
 async def help_command(update, context):
     """Commande /help pour afficher un message d'aide détaillé."""
     message = (
@@ -510,7 +596,7 @@ if __name__ == "__main__":
                 notify_admin(f"⚠️ Le bot a rencontré une erreur critique : {e}")
 
             # Pause entre les itérations pour limiter la charge
-            time.sleep(60)
+            time.sleep(15)
 
     except Exception as e:
         # Gestion des erreurs critiques hors boucle
