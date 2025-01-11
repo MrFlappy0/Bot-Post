@@ -28,7 +28,7 @@ DROPBOX_FILE_PATH_POSTS = "/sent_posts.txt"
 DROPBOX_FILE_PATH_SUBSCRIBERS = "/subscribers.json"
 DROPBOX_FILE_PATH_SUBREDDITS = "/subreddits.json"
 DROPBOX_FILE_PATH_STATS = "/stats.json"
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")  # ID Telegram de l'administrateur
+ADMIN_CHAT_ID = os.getenv("1073675668")  # ID Telegram de l'administrateur
 
 # Initialiser Reddit avec PRAW
 reddit = praw.Reddit(
@@ -156,54 +156,73 @@ def fetch_and_send_new_posts():
     Récupère les nouveaux posts des subreddits configurés, traite les médias et les envoie aux abonnés.
     Journalise chaque étape du processus.
     """
+    if not subreddits:
+        logging.error("❌ Aucun subreddit configuré. Vérifiez le fichier /subreddits.json.")
+        return
+
+    try:
+        reddit.user.me()
+        logging.info("✅ Connexion Reddit validée.")
+    except Exception as e:
+        logging.error(f"❌ Connexion Reddit échouée : {e}")
+        return
+
     for subreddit_name in subreddits:
         try:
-            logging.info(f"🔍 Début de la récupération des posts pour le subreddit : {subreddit_name}")
+            logging.info(f"🔍 Début de la récupération des posts pour : {subreddit_name}")
             subreddit = reddit.subreddit(subreddit_name)
 
-            # Récupération des derniers posts
+            # Récupérer les posts
             posts = list(subreddit.new(limit=100))
-            logging.info(f"✅ {len(posts)} posts récupérés depuis le subreddit {subreddit_name}.")
+            if not posts:
+                logging.warning(f"⚠️ Aucun post trouvé pour : {subreddit_name}")
+                continue
+            logging.info(f"✅ {len(posts)} posts récupérés de : {subreddit_name}")
 
-            # Téléchargement des médias
+            # Identifier les posts valides
             valid_posts = {
                 submission.id: "".join(
                     c if c.isalnum() or c in (" ", "-", "_") else "_" for c in submission.title
                 ) + "." + submission.url.split(".")[-1]
                 for submission in posts if submission.id not in sent_posts and is_media_post(submission)
             }
-            logging.info(f"🎞️ {len(valid_posts)} posts contenant des médias valides identifiés.")
+            if not valid_posts:
+                logging.info(f"⚠️ Aucun média valide trouvé dans les posts de : {subreddit_name}")
+                continue
 
+            logging.info(f"🎞️ {len(valid_posts)} médias valides détectés.")
+
+            # Télécharger les médias
             downloads = download_media_parallel(valid_posts)
-            logging.info(f"📥 Téléchargement des médias terminé pour le subreddit {subreddit_name}.")
+            logging.info("📥 Téléchargement terminé.")
 
-            # Traitement des téléchargements
+            # Traiter les téléchargements
             for submission in posts:
                 if submission.id in downloads and downloads[submission.id]:
                     filepath = downloads[submission.id]
-                    if os.path.getsize(filepath) > 50 * 1024 * 1024:  # Compression si nécessaire
+                    if os.path.getsize(filepath) > 50 * 1024 * 1024:  # Si fichier > 50MB, compresser
                         filepath = compress_file(filepath)
 
                     media_type = "image" if filepath.endswith(('.jpg', '.jpeg', '.png', '.gif')) else "video"
                     for chat_id in subscribers.keys():
                         send_media_to_telegram(chat_id, filepath, media_type)
 
-                    # Mise à jour des statistiques
+                    # Mettre à jour les statistiques
                     update_temporal_stats(submission, media_type)
 
-                    # Suppression du fichier temporaire
+                    # Supprimer le fichier temporaire
                     delete_file(filepath)
 
-                    # Marquer le post comme envoyé
+                    # Marquer comme envoyé
                     sent_posts.add(submission.id)
-                    logging.info(f"✅ Post {submission.id} envoyé avec succès et marqué comme traité.")
+                    logging.info(f"✅ Post {submission.id} envoyé avec succès.")
 
-            # Sauvegarde des données après le traitement
+            # Sauvegarder les données après traitement
             save_data()
-            logging.info(f"📝 Données sauvegardées après le traitement des posts du subreddit {subreddit_name}.")
+            logging.info(f"📝 Données sauvegardées après traitement des posts pour : {subreddit_name}")
 
         except Exception as e:
-            logging.error(f"❌ Erreur lors de la récupération ou du traitement des posts pour {subreddit_name} : {e}")
+            logging.error(f"❌ Erreur lors de la récupération ou du traitement des posts pour : {subreddit_name} - {e}")
 
 
 def is_media_post(submission):
@@ -315,6 +334,27 @@ def notify_admin(message):
     except Exception as e:
         logging.error(f"Erreur lors de l'envoi de la notification à l'administrateur : {e}")
 
+def validate_config():
+    """
+    Valide la configuration initiale : subreddits et connexion Reddit.
+    """
+    if not subreddits:
+        logging.error("❌ Aucun subreddit configuré. Vérifiez le fichier /subreddits.json.")
+        return False
+
+    try:
+        reddit.user.me()
+        logging.info("✅ Connexion Reddit réussie.")
+        return True
+    except Exception as e:
+        logging.error(f"❌ Impossible de se connecter à Reddit : {e}")
+        return False
+
+# Exemple d'utilisation dans main()
+if __name__ == "__main__":
+    load_data()
+    if not validate_config():
+        exit(1)  # Quitter si la validation échoue
 
 def compress_file(filepath):
     """
@@ -526,48 +566,78 @@ async def error_handler(update, context):
     logging.error(f"Une erreur s'est produite : {context.error}")
     await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Une erreur s'est produite : {context.error}")
 
+async def get_chat_id(update, context):
+    """Renvoie l'chat_id de l'utilisateur actuel."""
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f"Votre chat_id est : {chat_id}")
+    logging.info(f"Chat ID obtenu : {chat_id}")
+async def error_handler(update, context):
+    """Gère les erreurs et notifie l'administrateur."""
+    logging.error(f"Une erreur s'est produite : {context.error}")
+    if ADMIN_CHAT_ID:
+        try:
+            await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Une erreur s'est produite : {context.error}")
+            logging.info("Erreur notifiée à l'administrateur.")
+        except Exception as e:
+            logging.error(f"Impossible d'envoyer la notification à l'administrateur : {e}")
+    else:
+        logging.error("ADMIN_CHAT_ID est vide. Impossible de notifier l'administrateur.")
+async def notify_admin(message):
+    """Envoie une notification à l'administrateur."""
+    logging.info(f"Tentative d'envoi de notification : {message}")
+    if not ADMIN_CHAT_ID:
+        logging.error("ADMIN_CHAT_ID est vide. Impossible d'envoyer une notification.")
+        return
+    try:
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
+        logging.info("Notification envoyée avec succès.")
+    except Exception as e:
+        logging.error(f"Erreur lors de l'envoi de la notification : {e}")
 
 
 if __name__ == "__main__":
     try:
         # Charger les données initiales
-        logging.info("🔄 Chargement des données initiales...")
+        logging.info("🔄 Initialisation : Chargement des données...")
         load_data()
 
+        # Validation de la configuration
+        if not validate_config():
+            logging.error("❌ Configuration invalide. Arrêt du bot.")
+            exit(1)
+
         # Créer l'application Telegram
-        logging.info("🚀 Initialisation du bot Telegram...")
+        logging.info("🚀 Initialisation de l'application Telegram...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
 
         # Ajouter les commandes utilisateur et administrateur
         logging.info("⚙️ Ajout des commandes Telegram...")
         application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("test", echo))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("stats", stats_command))
         application.add_handler(CommandHandler("reload", reload_command))
         application.add_handler(CommandHandler("clean_temp", clean_temp_command))
-        application.add_error_handler(error_handler)
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
+        application.add_error_handler(error_handler)
 
-        # Démarrer le rapport quotidien dans un thread séparé
-        logging.info("🗓️ Démarrage de la planification du rapport quotidien.")
+        # Lancer un thread pour les rapports quotidiens
+        logging.info("🗓️ Démarrage de la planification des rapports quotidiens...")
         Thread(target=schedule_daily_report, daemon=True).start()
 
-        # Variables pour gestion dynamique
+        # Variables pour la boucle principale
         last_reload = time.time()
 
         # Démarrer l'écoute des commandes Telegram
-        logging.info("💬 Démarrage de l'écoute des commandes Telegram via polling...")
-        application.run_polling()
+        logging.info("💬 Lancement du polling Telegram...")
+        Thread(target=application.run_polling, daemon=True).start()
 
-        # Boucle principale pour la récupération des posts et autres tâches
+        # Boucle principale
         while True:
             try:
                 # Recharger les abonnés et subreddits toutes les 5 minutes
-                if time.time() - last_reload > 300:  # 300 secondes = 5 minutes
+                if time.time() - last_reload > 300:
                     logging.info("♻️ Rechargement des abonnés et subreddits depuis Dropbox...")
-                    subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
-                    subreddits = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, [])
+                    reload_data()
                     last_reload = time.time()
 
                 # Récupérer et envoyer les nouveaux posts
@@ -575,7 +645,7 @@ if __name__ == "__main__":
 
                 # Réessayer les envois échoués
                 if failed_queue:
-                    logging.info(f"🔁 Tentative de réenvoi pour {len(failed_queue)} fichiers échoués.")
+                    logging.info(f"🔁 Réessai de {len(failed_queue)} envois échoués...")
                     retry_failed_queue()
 
                 # Nettoyer les fichiers temporaires
@@ -585,20 +655,17 @@ if __name__ == "__main__":
                 save_data()
 
             except KeyboardInterrupt:
-                # Interruption manuelle par l'utilisateur
-                logging.warning("🛑 Interruption par l'utilisateur. Arrêt du bot en cours...")
-                notify_admin("❌ Le bot a été arrêté manuellement par l'administrateur.")
+                logging.warning("🛑 Arrêt manuel détecté. Fermeture en cours...")
+                notify_admin("❌ Le bot a été arrêté manuellement.")
                 break
 
             except Exception as e:
-                # Gestion des erreurs critiques
                 logging.error(f"⚠️ Erreur critique dans la boucle principale : {e}")
-                notify_admin(f"⚠️ Le bot a rencontré une erreur critique : {e}")
+                notify_admin(f"⚠️ Erreur critique dans la boucle principale : {e}")
 
             # Pause entre les itérations pour limiter la charge
-            time.sleep(15)
+            time.sleep(60)
 
     except Exception as e:
-        # Gestion des erreurs critiques hors boucle
-        logging.critical(f"🚨 Le bot n'a pas pu démarrer correctement : {e}")
+        logging.critical(f"🚨 Erreur fatale lors du démarrage : {e}")
         notify_admin(f"🚨 Erreur critique au démarrage : {e}")
