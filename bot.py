@@ -12,7 +12,7 @@ from telegram.error import NetworkError, TelegramError
 from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_fixed
 import time
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 # Chargement des variables d'environnement (Railway)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
@@ -168,6 +168,12 @@ def download_media_parallel(posts):
             executor.submit(download, reddit.submission(post_id).url, filename)
 
     return results
+
+def escape_markdown(text):
+    """Échappe les caractères spéciaux Markdown."""
+    escape_chars = r"_*[]()~`>#+-=|{}.!"
+    return "".join(f"\\{char}" if char in escape_chars else char for char in text)
+
 
 # Récupération et envoi des posts
 def fetch_and_send_new_posts():
@@ -396,6 +402,12 @@ async def stats_command(update, context):
 
 async def echo(update, context):
     await update.message.reply_text(f"Commande reçue : {update.message.text}")
+async def fallback(update, context):
+    await update.message.reply_text("Commande inconnue ou non prise en charge.")
+async def error_handler(update, context):
+    logging.error(f"Une erreur s'est produite : {context.error}")
+    await context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=f"⚠️ Une erreur s'est produite : {context.error}")
+
 
 
 if __name__ == "__main__":
@@ -416,6 +428,8 @@ if __name__ == "__main__":
         application.add_handler(CommandHandler("stats", stats_command))
         application.add_handler(CommandHandler("reload", reload_command))
         application.add_handler(CommandHandler("clean_temp", clean_temp_command))
+        application.add_error_handler(error_handler)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, fallback))
 
         # Démarrer le rapport quotidien dans un thread séparé
         logging.info("🗓️ Démarrage de la planification du rapport quotidien.")
