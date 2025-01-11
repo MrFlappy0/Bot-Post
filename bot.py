@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import praw
@@ -174,7 +175,6 @@ def escape_markdown(text):
     escape_chars = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{char}" if char in escape_chars else char for char in text)
 
-
 # Récupération et envoi des posts
 def fetch_and_send_new_posts():
     for subreddit_name in subreddits:
@@ -331,12 +331,46 @@ def reload_data():
     subreddits = initialize_subreddits_in_dropbox()
     logging.info("Données rechargées depuis Dropbox.")
 
+def split_message(message, max_length=4096):
+    return [message[i:i + max_length] for i in range(0, len(message), max_length)]
+
+async def send_long_message(chat_id, message, context):
+    for part in split_message(message):
+        await context.bot.send_message(chat_id=chat_id, text=part, parse_mode="Markdown")
+
+
+async def main_tasks():
+    while True:
+        try:
+            # Recharger les abonnés et subreddits toutes les 5 minutes
+            if time.time() - last_reload > 300:
+                logging.info("♻️ Rechargement des abonnés et subreddits depuis Dropbox...")
+                subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
+                subreddits = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, [])
+                last_reload = time.time()
+
+            # Récupérer et envoyer les nouveaux posts
+            fetch_and_send_new_posts()
+
+            # Réessayer les envois échoués
+            if failed_queue:
+                logging.info(f"🔁 Tentative de réenvoi pour {len(failed_queue)} fichiers échoués.")
+                retry_failed_queue()
+
+            # Nettoyer les fichiers temporaires
+            clean_temp_directory()
+
+            # Sauvegarder les données régulièrement
+            save_data()
+
+        except Exception as e:
+            logging.error(f"⚠️ Erreur critique dans les tâches principales : {e}")
+            notify_admin(f"⚠️ Erreur critique dans les tâches principales : {e}")
+        await asyncio.sleep(60)
 
 async def start(update, context):
-    """
-    Accueille l'utilisateur et explique les fonctionnalités du bot.
-    """
-    welcome_message = (
+    """Commande /start pour afficher un message d'accueil."""
+    message = (
         "👋 **Bienvenue sur le Reddit Media Bot !**\n\n"
         "📌 **Fonctionnalités principales :**\n"
         "- 🔍 Surveille des subreddits pour récupérer des images, vidéos ou GIFs.\n"
@@ -348,28 +382,26 @@ async def start(update, context):
         "➡️ `/help` - Affiche ce message d'aide.\n"
         "➡️ `/stats` - Affiche les statistiques actuelles.\n"
         "➡️ `/reload` - Recharge les données (abonnés, subreddits).\n"
-        "➡️ `/clean_temp` - Nettoie les fichiers temporaires.\n\n"
-        "💡 *Si vous avez des questions, contactez l'administrateur.*"
+        "\n💡 *Si vous avez des questions, contactez l'administrateur.*"
     )
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, parse_mode="Markdown")
+    escaped_message = escape_markdown(message)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=escaped_message, parse_mode="Markdown")
 async def help_command(update, context):
-    """
-    Affiche un message d'aide détaillé à l'utilisateur.
-    """
-    help_message = (
+    """Commande /help pour afficher un message d'aide détaillé."""
+    message = (
         "❓ **Aide et Informations sur le Bot**\n\n"
         "🔧 **Commandes disponibles :**\n"
         "1. `/start` - Affiche le message de bienvenue.\n"
         "2. `/help` - Affiche ce message d'aide.\n"
         "3. `/stats` - Montre les statistiques des médias envoyés.\n"
-        "4. `/reload` - Recharge les données des abonnés et des subreddits.\n"
-        "5. `/clean_temp` - Nettoie manuellement les fichiers temporaires.\n\n"
+        "4. `/reload` - Recharge les données des abonnés et des subreddits.\n\n"
         "📋 **Explications :**\n"
         "- Le bot surveille automatiquement les subreddits configurés pour récupérer des images, vidéos et GIFs.\n"
         "- Ces médias sont envoyés ici dès qu'ils sont disponibles.\n\n"
         "💬 *Pour toute question, contactez l'administrateur.*"
     )
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=help_message, parse_mode="Markdown")
+    escaped_message = escape_markdown(message)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=escaped_message, parse_mode="Markdown")
 async def clean_temp_command(update, context):
     """
     Commande pour nettoyer manuellement le répertoire temporaire.
