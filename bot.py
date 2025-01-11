@@ -1,6 +1,6 @@
 import praw
 from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import dropbox
 import json
 import os
@@ -55,7 +55,8 @@ reddit = praw.Reddit(
     client_secret=REDDIT_SECRET,
     user_agent=REDDIT_USER_AGENT,
 )
-telegram_bot = Bot(token=TELEGRAM_TOKEN)
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).connection_pool_size(100).build()
+telegram_bot = application.bot
 
 # Chemins de sauvegarde JSON
 LOGS_FILE = "/logs.json"
@@ -141,6 +142,8 @@ async def send_media(chat_id, submission):
             elif submission.post_hint in ["rich:video", "link"] and ".gif" in submission.url:
                 await telegram_bot.send_animation(chat_id=chat_id, animation=submission.url, caption=submission.title)
                 logger.info(f"GIF envoyé : {submission.id} - {submission.url}")
+        # Ajouter un délai pour respecter les limites de débit
+        await asyncio.sleep(1)  # Ajustez si nécessaire
     except Exception as e:
         logger.error(f"Erreur lors de l'envoi de médias pour {submission.id} : {e}")
         send_admin_alert(f"Erreur critique : Échec de l'envoi de médias pour le post {submission.id}.\n\n{e}")
@@ -199,15 +202,14 @@ async def remove_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Veuillez fournir un subreddit à supprimer.")
         return
+
     subreddit = context.args[0]
     if subreddit in SUBREDDITS:
         SUBREDDITS.remove(subreddit)
         update_config_on_dropbox()
         await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été supprimé avec succès !")
     else:
-        await update.message.reply_text(f"Le subreddit
-
-`{subreddit}` n'est pas surveillé.")
+        await update.message.reply_text(f"Le subreddit `{subreddit}` n'est pas surveillé.")
 
 async def list_subreddits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -234,9 +236,6 @@ def update_config_on_dropbox():
 # Fonction principale
 def main():
     logger.info("Initialisation de l'application Telegram.")
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-
-    # Ajouter les gestionnaires de commandes
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("addsub", add_subreddit))
     application.add_handler(CommandHandler("removesub", remove_subreddit))
