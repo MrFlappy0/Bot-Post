@@ -69,7 +69,7 @@ def initialize_subreddits_in_dropbox():
     ]
 
     try:
-        # Tente de charger les subreddits depuis Dropbox
+        # Tente de charger le fichier depuis Dropbox
         _, res = dropbox_client.files_download(DROPBOX_FILE_PATH_SUBREDDITS)
         current_subreddits = json.loads(res.content.decode("utf-8"))
 
@@ -100,13 +100,13 @@ def load_data():
 
     # Chargement des posts déjà envoyés
     sent_posts = set(load_file_from_dropbox(DROPBOX_FILE_PATH_POSTS, []))
-    
+
     # Chargement des abonnés
     subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
-    
+
     # Initialisation ou chargement des subreddits
     subreddits = initialize_subreddits_in_dropbox()
-    
+
     # Chargement des statistiques
     stats = load_file_from_dropbox(DROPBOX_FILE_PATH_STATS, stats)
 
@@ -321,53 +321,135 @@ def daily_report():
 def reload_data():
     global subscribers, subreddits
     subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
-    subreddits = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, ["example_subreddit"])
+    subreddits = initialize_subreddits_in_dropbox()
     logging.info("Données rechargées depuis Dropbox.")
 
+from telegram.ext import Updater, CommandHandler
 
+def start(update, context):
+    """
+    Accueille l'utilisateur et explique les fonctionnalités du bot.
+    """
+    welcome_message = (
+        "👋 **Bienvenue sur le Reddit Media Bot !**\n\n"
+        "📌 **Fonctionnalités principales :**\n"
+        "- 🔍 Surveille des subreddits pour récupérer des images, vidéos ou GIFs.\n"
+        "- 📤 Envoie les médias directement dans cette conversation Telegram.\n"
+        "- 📊 Génère des rapports quotidiens sur l'activité du bot.\n\n"
+        "📂 **Subreddits Suivis Actuellement :**\n"
+        f"{', '.join(subreddits)}\n\n"
+        "⚙️ **Commandes disponibles :**\n"
+        "➡️ `/help` - Affiche ce message d'aide.\n"
+        "➡️ `/stats` - Affiche les statistiques actuelles.\n"
+        "➡️ `/reload` - Recharge les données (abonnés, subreddits).\n"
+        "\n💡 *Si vous avez des questions, contactez l'administrateur.*"
+    )
+    context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, parse_mode="Markdown")
+
+# Ajout du gestionnaire pour la commande /start
+updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
+dispatcher = updater.dispatcher
+dispatcher.add_handler(CommandHandler("start", start))
+def help_command(update, context):
+    """
+    Affiche un message d'aide détaillé à l'utilisateur.
+    """
+    help_message = (
+        "❓ **Aide et Informations sur le Bot**\n\n"
+        "🔧 **Commandes disponibles :**\n"
+        "1. `/start` - Affiche le message de bienvenue.\n"
+        "2. `/help` - Affiche ce message d'aide.\n"
+        "3. `/stats` - Montre les statistiques des médias envoyés.\n"
+        "4. `/reload` - Recharge les données des abonnés et des subreddits.\n\n"
+        "📋 **Explications :**\n"
+        "- Le bot surveille automatiquement les subreddits configurés pour récupérer des images, vidéos et GIFs.\n"
+        "- Ces médias sont envoyés ici dès qu'ils sont disponibles.\n\n"
+        "💬 *Pour toute question, contactez l'administrateur.*"
+    )
+    context.bot.send_message(chat_id=update.effective_chat.id, text=help_message, parse_mode="Markdown")
+
+# Ajout du gestionnaire pour la commande /help
+dispatcher.add_handler(CommandHandler("help", help_command))
+def stats_command(update, context):
+    """
+    Affiche les statistiques actuelles des médias envoyés.
+    """
+    stats_message = (
+        "📊 **Statistiques Actuelles**\n\n"
+        f"📸 Images envoyées : {stats['images']}\n"
+        f"🎥 Vidéos envoyées : {stats['videos']}\n"
+        f"🎞️ GIFs envoyés : {stats['gifs']}\n"
+        f"📬 Total de médias envoyés : {stats['total']}\n\n"
+        "🛠️ *Subreddits actuellement suivis :*\n"
+        f"{', '.join(subreddits)}"
+    )
+    context.bot.send_message(chat_id=update.effective_chat.id, text=stats_message, parse_mode="Markdown")
+
+# Ajout du gestionnaire pour la commande /stats
+dispatcher.add_handler(CommandHandler("stats", stats_command))
+def reload_command(update, context):
+    """
+    Recharge les abonnés et les subreddits depuis Dropbox.
+    """
+    reload_data()
+    context.bot.send_message(chat_id=update.effective_chat.id, text="🔄 Données rechargées avec succès.")
+    logging.info("Les données ont été rechargées.")
+
+# Ajout du gestionnaire pour la commande /reload
+dispatcher.add_handler(CommandHandler("reload", reload_command))
 
 if __name__ == "__main__":
-    # Charger les données initiales
-    logging.info("Chargement des données...")
-    load_data()
-    
-    # Lancer le rapport quotidien dans un thread séparé
-    logging.info("Démarrage de la planification du rapport quotidien.")
-    Thread(target=schedule_daily_report, daemon=True).start()
+    try:
+        # Charger les données initiales
+        logging.info("🔄 Chargement des données initiales...")
+        load_data()
 
-    # Variables pour gestion dynamique
-    last_reload = time.time()
+        # Démarrer le rapport quotidien dans un thread séparé
+        logging.info("🗓️ Démarrage de la planification du rapport quotidien.")
+        Thread(target=schedule_daily_report, daemon=True).start()
 
-    while True:
-        try:
-            # Recharger les abonnés et subreddits toutes les 5 minutes
-            if time.time() - last_reload > 300:  # 300 secondes = 5 minutes
-                logging.info("Rechargement des abonnés et subreddits depuis Dropbox.")
-                subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
-                subreddits = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, ["example_subreddit"])
-                last_reload = time.time()
+        # Variables pour gestion dynamique
+        last_reload = time.time()
 
-            # Récupérer et envoyer les nouveaux posts
-            fetch_and_send_new_posts()
+        # Boucle principale
+        while True:
+            try:
+                # Recharger les abonnés et subreddits toutes les 5 minutes
+                if time.time() - last_reload > 300:  # 300 secondes = 5 minutes
+                    logging.info("♻️ Rechargement des abonnés et subreddits depuis Dropbox...")
+                    subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
+                    subreddits = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, [])
+                    last_reload = time.time()
 
-            # Réessayer les envois échoués
-            if failed_queue:
-                logging.info(f"Tentative de réenvoi pour {len(failed_queue)} fichiers échoués.")
-                retry_failed_queue()
+                # Récupérer et envoyer les nouveaux posts
+                fetch_and_send_new_posts()
 
-            # Nettoyer les fichiers temporaires
-            clean_temp_directory()
+                # Réessayer les envois échoués
+                if failed_queue:
+                    logging.info(f"🔁 Tentative de réenvoi pour {len(failed_queue)} fichiers échoués.")
+                    retry_failed_queue()
 
-            # Sauvegarder les données régulièrement
-            save_data()
+                # Nettoyer les fichiers temporaires
+                clean_temp_directory()
 
-        except KeyboardInterrupt:
-            logging.warning("Interruption du bot par l'utilisateur. Arrêt en cours...")
-            break
-        except Exception as e:
-            # Gestion des erreurs critiques
-            logging.error(f"Erreur critique dans la boucle principale : {e}")
-            notify_admin(f"⚠️ Le bot a rencontré une erreur critique : {e}")
+                # Sauvegarder les données régulièrement
+                save_data()
 
-        # Pause entre les itérations pour limiter la charge
-        time.sleep(60)
+            except KeyboardInterrupt:
+                # Interruption manuelle par l'utilisateur
+                logging.warning("🛑 Interruption par l'utilisateur. Arrêt du bot en cours...")
+                notify_admin("❌ Le bot a été arrêté manuellement par l'administrateur.")
+                break
+
+            except Exception as e:
+                # Gestion des erreurs critiques
+                logging.error(f"⚠️ Erreur critique dans la boucle principale : {e}")
+                notify_admin(f"⚠️ Le bot a rencontré une erreur critique : {e}")
+
+            # Pause entre les itérations pour limiter la charge
+            time.sleep(60)
+
+    except Exception as e:
+        # Gestion des erreurs critiques hors boucle
+        logging.critical(f"🚨 Le bot n'a pas pu démarrer correctement : {e}")
+        notify_admin(f"🚨 Erreur critique au démarrage : {e}")
