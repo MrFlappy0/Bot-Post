@@ -158,6 +158,70 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Les posts sont publiés directement dans ce groupe ou cette conversation. Profitez-en !"
     )
 
+
+#ADMIN 
+
+# Vérification des droits d'administrateur
+def is_admin(user_id):
+    return str(user_id) == str(ADMIN_TELEGRAM_ID)
+
+# Commande pour ajouter un subreddit
+async def add_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
+        logger.warning(f"Utilisateur non autorisé {update.effective_user.id} a tenté d'ajouter un subreddit.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Veuillez fournir un subreddit à ajouter.")
+        return
+
+    subreddit = context.args[0]
+    if subreddit not in SUBREDDITS:
+        SUBREDDITS.append(subreddit)
+        write_to_dropbox("/config.json", {"subreddits": SUBREDDITS, "telegram_chat_id": TELEGRAM_CHAT_ID})
+        await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été ajouté avec succès !")
+        logger.info(f"Subreddit ajouté : {subreddit}")
+    else:
+        await update.message.reply_text(f"Le subreddit `{subreddit}` est déjà surveillé.")
+
+# Commande pour supprimer un subreddit
+async def remove_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
+        logger.warning(f"Utilisateur non autorisé {update.effective_user.id} a tenté de supprimer un subreddit.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Veuillez fournir un subreddit à supprimer.")
+        return
+
+    subreddit = context.args[0]
+    if subreddit in SUBREDDITS:
+        SUBREDDITS.remove(subreddit)
+        write_to_dropbox("/config.json", {"subreddits": SUBREDDITS, "telegram_chat_id": TELEGRAM_CHAT_ID})
+        await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été supprimé avec succès !")
+        logger.info(f"Subreddit supprimé : {subreddit}")
+    else:
+        await update.message.reply_text(f"Le subreddit `{subreddit}` n'est pas surveillé.")
+
+# Commande pour lister les subreddits surveillés
+async def list_subreddits(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
+        logger.warning(f"Utilisateur non autorisé {update.effective_user.id} a tenté de lister les subreddits.")
+        return
+
+    await update.message.reply_text(
+        f"📜 Liste des subreddits surveillés :\n\n{', '.join(SUBREDDITS)}"
+    )
+    logger.info(f"Liste des subreddits envoyée à l'utilisateur {update.effective_user.id}.")
+
+
+    #FIN ADMIN 
+
+
+
 # Initialisation du bot Telegram avec Application
 def main():
     # Créer une instance de l'application
@@ -166,6 +230,9 @@ def main():
 
     # Ajouter les gestionnaires de commandes
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("addsub", add_subreddit))  # Réservé aux admins
+    application.add_handler(CommandHandler("removesub", remove_subreddit))  # Réservé aux admins
+    application.add_handler(CommandHandler("list", list_subreddits))  # Réservé aux admins
 
     # Lancer la surveillance Reddit dans un thread séparé
     logger.info("Démarrage de la surveillance Reddit.")
@@ -175,6 +242,7 @@ def main():
     archive_logs()
 
     # Démarrer l'application
+    application.run_polling()
     application.run_polling()
 
 if __name__ == "__main__":
