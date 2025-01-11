@@ -246,7 +246,7 @@ def is_media_post(submission):
         logging.error(f"❌ Erreur lors de la vérification du média pour le post {submission.id} : {e}")
         return False
     
-    
+
 def download_media_parallel(posts):
     """
     Télécharge les médias de plusieurs posts en parallèle et journalise le progrès.
@@ -631,4 +631,4 @@ if __name__ == "__main__":
 
     except Exception as e:
         logging.critical(f"🚨 Erreur fatale lors du démarrage : {e}")
-        notify_admin(f"🚨 Erreur critique au démarrage : {e}")
+        notify_admin(f"🚨 Erreur critique au démarrage : {e}") 
