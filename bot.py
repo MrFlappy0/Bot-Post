@@ -326,8 +326,7 @@ def reload_data():
     logging.info("Données rechargées depuis Dropbox.")
 
 
-
-def start(update, context):
+async def start(update, context):
     """
     Accueille l'utilisateur et explique les fonctionnalités du bot.
     """
@@ -343,13 +342,11 @@ def start(update, context):
         "➡️ `/help` - Affiche ce message d'aide.\n"
         "➡️ `/stats` - Affiche les statistiques actuelles.\n"
         "➡️ `/reload` - Recharge les données (abonnés, subreddits).\n"
-        "\n💡 *Si vous avez des questions, contactez l'administrateur.*"
+        "➡️ `/clean_temp` - Nettoie les fichiers temporaires.\n\n"
+        "💡 *Si vous avez des questions, contactez l'administrateur.*"
     )
-    context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, parse_mode="Markdown")
-
-# Ajout du gestionnaire pour la commande /start
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-def help_command(update, context):
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, parse_mode="Markdown")
+async def help_command(update, context):
     """
     Affiche un message d'aide détaillé à l'utilisateur.
     """
@@ -359,15 +356,30 @@ def help_command(update, context):
         "1. `/start` - Affiche le message de bienvenue.\n"
         "2. `/help` - Affiche ce message d'aide.\n"
         "3. `/stats` - Montre les statistiques des médias envoyés.\n"
-        "4. `/reload` - Recharge les données des abonnés et des subreddits.\n\n"
+        "4. `/reload` - Recharge les données des abonnés et des subreddits.\n"
+        "5. `/clean_temp` - Nettoie manuellement les fichiers temporaires.\n\n"
         "📋 **Explications :**\n"
         "- Le bot surveille automatiquement les subreddits configurés pour récupérer des images, vidéos et GIFs.\n"
         "- Ces médias sont envoyés ici dès qu'ils sont disponibles.\n\n"
         "💬 *Pour toute question, contactez l'administrateur.*"
     )
-    context.bot.send_message(chat_id=update.effective_chat.id, text=help_message, parse_mode="Markdown")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=help_message, parse_mode="Markdown")
+async def clean_temp_command(update, context):
+    """
+    Commande pour nettoyer manuellement le répertoire temporaire.
+    """
+    clean_temp_directory()  # Appel de la fonction synchrone pour nettoyer
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="🧹 Répertoire temporaire nettoyé.")
+    logging.info("Commande de nettoyage du répertoire temporaire exécutée.")
 
-def stats_command(update, context):
+async def reload_command(update, context):
+    """
+    Recharge les abonnés et les subreddits depuis Dropbox.
+    """
+    reload_data()
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="🔄 Données rechargées avec succès.")
+    logging.info("Les données ont été rechargées.")
+async def stats_command(update, context):
     """
     Affiche les statistiques actuelles des médias envoyés.
     """
@@ -380,23 +392,7 @@ def stats_command(update, context):
         "🛠️ *Subreddits actuellement suivis :*\n"
         f"{', '.join(subreddits)}"
     )
-    context.bot.send_message(chat_id=update.effective_chat.id, text=stats_message, parse_mode="Markdown")
-
-def clean_temp_command(update, context):
-    """
-    Commande pour nettoyer manuellement le répertoire temporaire.
-    """
-    clean_temp_directory()
-    context.bot.send_message(chat_id=update.effective_chat.id, text="🧹 Répertoire temporaire nettoyé.")
-    logging.info("Commande de nettoyage du répertoire temporaire exécutée.")
-
-def reload_command(update, context):
-    """
-    Recharge les abonnés et les subreddits depuis Dropbox.
-    """
-    reload_data()
-    context.bot.send_message(chat_id=update.effective_chat.id, text="🔄 Données rechargées avec succès.")
-    logging.info("Les données ont été rechargées.")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=stats_message, parse_mode="Markdown")
 
 
 if __name__ == "__main__":
@@ -405,11 +401,11 @@ if __name__ == "__main__":
         logging.info("🔄 Chargement des données initiales...")
         load_data()
 
-        # Créer l'application Telegram avec le nouveau constructeur
+        # Créer l'application Telegram
         logging.info("🚀 Initialisation du bot Telegram...")
         application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-        # Ajouter les gestionnaires de commandes directement à l'application
+        # Ajouter les commandes utilisateur et administrateur
         logging.info("⚙️ Ajout des commandes Telegram...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CommandHandler("help", help_command))
@@ -421,11 +417,52 @@ if __name__ == "__main__":
         logging.info("🗓️ Démarrage de la planification du rapport quotidien.")
         Thread(target=schedule_daily_report, daemon=True).start()
 
-        # Lancer l'application Telegram en mode polling
-        logging.info("💬 Lancement du bot Telegram...")
-        application.run_polling()
+        # Variables pour gestion dynamique
+        last_reload = time.time()
+
+        # Lancer l'application Telegram dans un thread séparé
+        logging.info("💬 Démarrage de l'écoute des commandes Telegram...")
+        Thread(target=application.run_polling, daemon=True).start()
+
+        # Boucle principale pour la récupération des posts et autres tâches
+        while True:
+            try:
+                # Recharger les abonnés et subreddits toutes les 5 minutes
+                if time.time() - last_reload > 300:  # 300 secondes = 5 minutes
+                    logging.info("♻️ Rechargement des abonnés et subreddits depuis Dropbox...")
+                    subscribers = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBSCRIBERS, {})
+                    subreddits = load_file_from_dropbox(DROPBOX_FILE_PATH_SUBREDDITS, [])
+                    last_reload = time.time()
+
+                # Récupérer et envoyer les nouveaux posts
+                fetch_and_send_new_posts()
+
+                # Réessayer les envois échoués
+                if failed_queue:
+                    logging.info(f"🔁 Tentative de réenvoi pour {len(failed_queue)} fichiers échoués.")
+                    retry_failed_queue()
+
+                # Nettoyer les fichiers temporaires
+                clean_temp_directory()
+
+                # Sauvegarder les données régulièrement
+                save_data()
+
+            except KeyboardInterrupt:
+                # Interruption manuelle par l'utilisateur
+                logging.warning("🛑 Interruption par l'utilisateur. Arrêt du bot en cours...")
+                notify_admin("❌ Le bot a été arrêté manuellement par l'administrateur.")
+                break
+
+            except Exception as e:
+                # Gestion des erreurs critiques
+                logging.error(f"⚠️ Erreur critique dans la boucle principale : {e}")
+                notify_admin(f"⚠️ Le bot a rencontré une erreur critique : {e}")
+
+            # Pause entre les itérations pour limiter la charge
+            time.sleep(60)
 
     except Exception as e:
-        # Gestion des erreurs critiques
+        # Gestion des erreurs critiques hors boucle
         logging.critical(f"🚨 Le bot n'a pas pu démarrer correctement : {e}")
         notify_admin(f"🚨 Erreur critique au démarrage : {e}")
