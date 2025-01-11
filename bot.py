@@ -16,7 +16,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Environnement (Remplacez par vos variables Railways)
+# Environnement (remplacez par vos variables Railways ou définissez les valeurs localement)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
 REDDIT_SECRET = os.getenv("REDDIT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
@@ -27,25 +27,25 @@ ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")  # ID de l'administrateur Tel
 # Initialisation de Dropbox
 dropbox_client = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
 
-# Fonction pour lire config.json depuis Dropbox
+# Fonction pour charger config.json depuis Dropbox
 def load_config_from_dropbox():
     try:
         logger.info("Tentative de téléchargement de config.json depuis Dropbox.")
         _, res = dropbox_client.files_download("/config.json")
         config = json.loads(res.content)
         logger.info("Configuration chargée avec succès depuis Dropbox.")
+
+        # Validation des clés dans la configuration
+        if not all(key in config for key in ["subreddits", "telegram_chat_id", "admin_id"]):
+            raise ValueError("Certaines clés manquent dans config.json.")
         return config
     except Exception as e:
         logger.error(f"Erreur lors du chargement de config.json : {e}")
         send_admin_alert(f"Erreur critique : Impossible de charger config.json.\n\n{e}")
-        return None
+        raise
 
-# Charger la configuration depuis Dropbox
+# Charger la configuration
 config = load_config_from_dropbox()
-if not config:
-    logger.critical("Impossible de charger config.json depuis Dropbox. Arrêt du script.")
-    raise ValueError("Impossible de charger config.json depuis Dropbox.")
-
 SUBREDDITS = config["subreddits"]
 TELEGRAM_CHAT_ID = config["telegram_chat_id"]
 
@@ -55,7 +55,6 @@ reddit = praw.Reddit(
     client_secret=REDDIT_SECRET,
     user_agent=REDDIT_USER_AGENT,
 )
-
 telegram_bot = Bot(token=TELEGRAM_TOKEN)
 
 # Chemins de sauvegarde JSON
@@ -111,6 +110,23 @@ def archive_logs():
         logger.error(f"Erreur lors de l'archivage des logs : {e}")
         send_admin_alert(f"Erreur critique : Impossible d'archiver les logs.\n\n{e}")
 
+# Planification de l'archivage quotidien des logs
+def schedule_log_archiving():
+    from time import sleep
+    from threading import Thread
+    import schedule
+
+    def archive_logs_job():
+        archive_logs()
+
+    def run_schedule():
+        while True:
+            schedule.run_pending()
+            sleep(60)
+
+    schedule.every().day.at("00:00").do(archive_logs_job)
+    Thread(target=run_schedule, daemon=True).start()
+
 # Détection et envoi des médias
 async def send_media(chat_id, submission):
     try:
@@ -135,8 +151,8 @@ def monitor_reddit():
     posted_ids = set(read_from_dropbox(POSTS_FILE))
 
     while True:
-        for subreddit in SUBREDDITS:
-            try:
+        try:
+            for subreddit in SUBREDDITS:
                 logger.debug(f"Vérification des nouveaux posts sur le subreddit : {subreddit}")
                 for submission in reddit.subreddit(subreddit).new(limit=10):
                     if submission.id not in posted_ids:
@@ -144,11 +160,11 @@ def monitor_reddit():
                             asyncio.run(send_media(TELEGRAM_CHAT_ID, submission))
                         posted_ids.add(submission.id)
                         write_to_dropbox(POSTS_FILE, list(posted_ids))
-            except Exception as e:
-                logger.error(f"Erreur lors de la surveillance de {subreddit} : {e}")
-                send_admin_alert(f"Erreur critique : Problème lors de la surveillance de {subreddit}.\n\n{e}")
+        except Exception as e:
+            logger.error(f"Erreur globale lors de la surveillance de Reddit : {e}")
+            send_admin_alert(f"Erreur critique lors de la surveillance Reddit :\n\n{e}")
 
-# Commande /start
+# Commandes Telegram
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Commande /start appelée.")
     await update.message.reply_text(
@@ -158,91 +174,82 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Les posts sont publiés directement dans ce groupe ou cette conversation. Profitez-en !"
     )
 
-
-#ADMIN 
-
-# Vérification des droits d'administrateur
 def is_admin(user_id):
     return str(user_id) == str(ADMIN_TELEGRAM_ID)
 
-# Commande pour ajouter un subreddit
 async def add_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
-        logger.warning(f"Utilisateur non autorisé {update.effective_user.id} a tenté d'ajouter un subreddit.")
         return
-
     if not context.args:
         await update.message.reply_text("Veuillez fournir un subreddit à ajouter.")
         return
-
     subreddit = context.args[0]
     if subreddit not in SUBREDDITS:
         SUBREDDITS.append(subreddit)
-        write_to_dropbox("/config.json", {"subreddits": SUBREDDITS, "telegram_chat_id": TELEGRAM_CHAT_ID})
+        update_config_on_dropbox()
         await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été ajouté avec succès !")
-        logger.info(f"Subreddit ajouté : {subreddit}")
     else:
         await update.message.reply_text(f"Le subreddit `{subreddit}` est déjà surveillé.")
 
-# Commande pour supprimer un subreddit
 async def remove_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
-        logger.warning(f"Utilisateur non autorisé {update.effective_user.id} a tenté de supprimer un subreddit.")
         return
-
     if not context.args:
         await update.message.reply_text("Veuillez fournir un subreddit à supprimer.")
         return
-
     subreddit = context.args[0]
     if subreddit in SUBREDDITS:
         SUBREDDITS.remove(subreddit)
-        write_to_dropbox("/config.json", {"subreddits": SUBREDDITS, "telegram_chat_id": TELEGRAM_CHAT_ID})
+        update_config_on_dropbox()
         await update.message.reply_text(f"✅ Le subreddit `{subreddit}` a été supprimé avec succès !")
-        logger.info(f"Subreddit supprimé : {subreddit}")
     else:
-        await update.message.reply_text(f"Le subreddit `{subreddit}` n'est pas surveillé.")
+        await update.message.reply_text(f"Le subreddit
 
-# Commande pour lister les subreddits surveillés
+`{subreddit}` n'est pas surveillé.")
+
 async def list_subreddits(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
-        logger.warning(f"Utilisateur non autorisé {update.effective_user.id} a tenté de lister les subreddits.")
         return
-
     await update.message.reply_text(
         f"📜 Liste des subreddits surveillés :\n\n{', '.join(SUBREDDITS)}"
     )
-    logger.info(f"Liste des subreddits envoyée à l'utilisateur {update.effective_user.id}.")
 
+# Mise à jour de la configuration sur Dropbox
+def update_config_on_dropbox():
+    try:
+        config_data = {
+            "subreddits": SUBREDDITS,
+            "telegram_chat_id": TELEGRAM_CHAT_ID,
+            "admin_id": ADMIN_TELEGRAM_ID,
+        }
+        write_to_dropbox("/config.json", config_data)
+        logger.info("Configuration mise à jour avec succès sur Dropbox.")
+    except Exception as e:
+        logger.error(f"Erreur lors de la mise à jour de config.json : {e}")
+        send_admin_alert(f"Erreur critique : Impossible de mettre à jour config.json.\n\n{e}")
 
-    #FIN ADMIN 
-
-
-
-# Initialisation du bot Telegram avec Application
+# Fonction principale
 def main():
-    # Créer une instance de l'application
     logger.info("Initialisation de l'application Telegram.")
     application = Application.builder().token(TELEGRAM_TOKEN).build()
 
     # Ajouter les gestionnaires de commandes
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("addsub", add_subreddit))  # Réservé aux admins
-    application.add_handler(CommandHandler("removesub", remove_subreddit))  # Réservé aux admins
-    application.add_handler(CommandHandler("list", list_subreddits))  # Réservé aux admins
+    application.add_handler(CommandHandler("addsub", add_subreddit))
+    application.add_handler(CommandHandler("removesub", remove_subreddit))
+    application.add_handler(CommandHandler("list", list_subreddits))
 
     # Lancer la surveillance Reddit dans un thread séparé
     logger.info("Démarrage de la surveillance Reddit.")
     Thread(target=monitor_reddit, daemon=True).start()
 
     # Planifier l'archivage des logs quotidiennement
-    archive_logs()
+    schedule_log_archiving()
 
     # Démarrer l'application
-    application.run_polling()
     application.run_polling()
 
 if __name__ == "__main__":
