@@ -347,7 +347,7 @@ def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_message, parse_mode="Markdown")
 
 # Ajout du gestionnaire pour la commande /start
-application = Application(token=TELEGRAM_TOKEN, use_context=True)
+application = Application.builder().token(TELEGRAM_TOKEN).build()
 dispatcher = application.dispatcher
 dispatcher.add_handler(CommandHandler("start", start))
 def help_command(update, context):
