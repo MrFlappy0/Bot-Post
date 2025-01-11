@@ -394,6 +394,9 @@ async def stats_command(update, context):
     )
     await context.bot.send_message(chat_id=update.effective_chat.id, text=stats_message, parse_mode="Markdown")
 
+async def echo(update, context):
+    await update.message.reply_text(f"Commande reçue : {update.message.text}")
+
 
 if __name__ == "__main__":
     try:
@@ -408,6 +411,7 @@ if __name__ == "__main__":
         # Ajouter les commandes utilisateur et administrateur
         logging.info("⚙️ Ajout des commandes Telegram...")
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("test", echo))
         application.add_handler(CommandHandler("help", help_command))
         application.add_handler(CommandHandler("stats", stats_command))
         application.add_handler(CommandHandler("reload", reload_command))
@@ -420,9 +424,9 @@ if __name__ == "__main__":
         # Variables pour gestion dynamique
         last_reload = time.time()
 
-        # Lancer l'application Telegram dans un thread séparé
-        logging.info("💬 Démarrage de l'écoute des commandes Telegram...")
-        Thread(target=application.run_polling, daemon=True).start()
+        # Démarrer l'écoute des commandes Telegram
+        logging.info("💬 Démarrage de l'écoute des commandes Telegram via polling...")
+        application.run_polling()
 
         # Boucle principale pour la récupération des posts et autres tâches
         while True:
