@@ -8,6 +8,7 @@ from threading import Thread
 import asyncio
 import logging
 from datetime import datetime
+from tenacity import retry, stop_after_attempt, wait_fixed
 
 # Configuration des logs
 logging.basicConfig(
@@ -55,7 +56,7 @@ reddit = praw.Reddit(
     client_secret=REDDIT_SECRET,
     user_agent=REDDIT_USER_AGENT,
 )
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).connection_pool_size(100).build()
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).connection_pool_size(100).request_timeout(60).build()
 telegram_bot = application.bot
 
 # Chemins de sauvegarde JSON
@@ -128,25 +129,32 @@ def schedule_log_archiving():
     schedule.every().day.at("00:00").do(archive_logs_job)
     Thread(target=run_schedule, daemon=True).start()
 
-# Détection et envoi des médias
+# Envoi des médias avec retries
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(5))
+async def send_media_with_retry(chat_id, submission):
+    if hasattr(submission, "post_hint"):
+        if submission.post_hint == "image":
+            await telegram_bot.send_photo(chat_id=chat_id, photo=submission.url)
+            logger.info(f"Image envoyée : {submission.id} - {submission.url}")
+        elif submission.post_hint == "hosted:video" and hasattr(submission, "media"):
+            video_url = submission.media["reddit_video"]["fallback_url"]
+            await telegram_bot.send_video(chat_id=chat_id, video=video_url)
+            logger.info(f"Vidéo envoyée : {submission.id} - {video_url}")
+        elif submission.post_hint in ["rich:video", "link"] and ".gif" in submission.url:
+            await telegram_bot.send_animation(chat_id=chat_id, animation=submission.url)
+            logger.info(f"GIF envoyé : {submission.id} - {submission.url}")
+
+# Gestion des envois avec délai
 async def send_media(chat_id, submission):
     try:
-        if hasattr(submission, "post_hint"):
-            if submission.post_hint == "image":
-                await telegram_bot.send_photo(chat_id=chat_id, photo=submission.url, caption=submission.title)
-                logger.info(f"Image envoyée : {submission.id} - {submission.url}")
-            elif submission.post_hint == "hosted:video" and hasattr(submission, "media"):
-                video_url = submission.media["reddit_video"]["fallback_url"]
-                await telegram_bot.send_video(chat_id=chat_id, video=video_url, caption=submission.title)
-                logger.info(f"Vidéo envoyée : {submission.id} - {video_url}")
-            elif submission.post_hint in ["rich:video", "link"] and ".gif" in submission.url:
-                await telegram_bot.send_animation(chat_id=chat_id, animation=submission.url, caption=submission.title)
-                logger.info(f"GIF envoyé : {submission.id} - {submission.url}")
-        # Ajouter un délai pour respecter les limites de débit
-        await asyncio.sleep(1)  # Ajustez si nécessaire
+        await send_media_with_retry(chat_id, submission)
+        await asyncio.sleep(1)  # Délai entre les envois
+    except asyncio.TimeoutError as e:
+        logger.error(f"Timeout lors de l'envoi du média pour {submission.id} : {e}")
+        send_admin_alert(f"Timeout lors de l'envoi du média : {submission.id}.")
     except Exception as e:
-        logger.error(f"Erreur lors de l'envoi de médias pour {submission.id} : {e}")
-        send_admin_alert(f"Erreur critique : Échec de l'envoi de médias pour le post {submission.id}.\n\n{e}")
+        logger.error(f"Erreur critique pour le média {submission.id} : {e}")
+        send_admin_alert(f"Erreur critique lors de l'envoi du média : {submission.id}.\n\n{e}")
 
 # Fonction principale pour surveiller Reddit
 def monitor_reddit():
@@ -172,14 +180,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Commande /start appelée.")
     await update.message.reply_text(
         "🤖 Bienvenue dans le bot Reddit Telegram !\n\n"
-        "Ce bot surveille les subreddits suivants et publie automatiquement les nouveaux posts contenant des images, vidéos et GIFs :\n\n"
-        f"{', '.join(SUBREDDITS)}\n\n"
+        "Ce bot surveille les subreddits et publie automatiquement les nouveaux médias.\n\n"
         "Les posts sont publiés directement dans ce groupe ou cette conversation. Profitez-en !"
     )
 
 def is_admin(user_id):
     return str(user_id) == str(ADMIN_TELEGRAM_ID)
 
+# Commandes pour gérer les subreddits
 async def add_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("🚫 Vous n'êtes pas autorisé à effectuer cette commande.")
@@ -202,7 +210,6 @@ async def remove_subreddit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Veuillez fournir un subreddit à supprimer.")
         return
-
     subreddit = context.args[0]
     if subreddit in SUBREDDITS:
         SUBREDDITS.remove(subreddit)
