@@ -1,6 +1,5 @@
-praw==7.8.1
-python-telegram-bot==20.3
-dropbox==11.36.0
+﻿certifi==2023.11.17
+charset-normalizer==3.3.2
+idna==3.6
 requests==2.31.0
-tenacity==8.2.2
-schedule==1.1.0
+urllib3==2.1.0

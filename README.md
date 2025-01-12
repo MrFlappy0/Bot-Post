@@ -1,70 +1,30 @@
-# Reddit Media Bot
 
-## Description
-Le Reddit Media Bot est un bot Telegram qui surveille des subreddits spécifiques pour récupérer des images, vidéos et GIFs, puis les envoie automatiquement aux abonnés sur Telegram. Il génère également des rapports quotidiens sur l'activité du bot.
+<h2 align="center"> Reddit to Telegram Bot </h2> 
 
-## Fonctionnalités
-- Surveillance de subreddits pour récupérer des médias.
-- Envoi automatique des médias aux abonnés Telegram.
-- Génération de rapports quotidiens.
-- Gestion des abonnés et des subreddits via Dropbox.
-- Journalisation détaillée des opérations.
 
-## Prérequis
-- Python 3.7+
-- Compte Reddit avec une application configurée pour obtenir les identifiants API.
-- Bot Telegram avec un token d'accès.
-- Compte Dropbox avec un token d'accès.
+Script for a telegram bot that fetches media from a list of subreddits and sends the retrieved media as a message in your telegram channel.
 
-## Installation
-1. Clonez le dépôt :
-    ```bash
-    git clone https://github.com/MrFlappy0/Bot-Post.git
-    cd Bot-Post
-    ```
+![Reddit_poster](https://github.com/agniveshsp/reddit_to_telegram_bot/assets/67277625/cc54f719-64a9-412d-be56-119b1b2f7523)
 
-2. Installez les dépendances :
-    ```bash
-    pip install -r requirements.txt
-    ```
 
-3. Configurez les variables d'environnement :
-    ```bash
-    export REDDIT_CLIENT_ID="votre_client_id"
-    export REDDIT_SECRET="votre_secret"
-    export REDDIT_USER_AGENT="votre_user_agent"
-    export TELEGRAM_TOKEN="votre_telegram_token"
-    export DROPBOX_ACCESS_TOKEN="votre_dropbox_token"
-    export ADMIN_CHAT_ID="votre_chat_id_admin"
-    ```
 
-## Utilisation
-1. Démarrez le bot :
-    ```bash
-    python bot.py
-    ```
+## Table of Contents
+1. [Telegram Requirements](#telegram-requirements)
+2. [How to Use](#how-to-use)
 
-2. Commandes Telegram disponibles :
-    - `/start` : Affiche un message de bienvenue et enregistre l'utilisateur.
-    - `/help` : Affiche un message d'aide détaillé.
-    - `/stats` : Affiche les statistiques actuelles des médias envoyés.
-    - `/reload` : Recharge les données des abonnés et des subreddits depuis Dropbox.
-    - `/clean_temp` : Nettoie manuellement le répertoire temporaire.
+---
+## Telegram Requirements
+1. A telegram channel with admin/owner access.
+2. A telegram bot added to the channel and given admin privilleges.
+3. API of the Telegram bot added to the channel.(Can be obtained from BotFather bot)
 
-## Structure du Projet
-- `bot.py` : Contient le code principal du bot.
-- `requirements.txt` : Liste des dépendances Python.
-- `Procfile` : Fichier de configuration pour déploiement sur des plateformes comme Heroku.
-- `README.md` : Ce fichier, contenant la documentation du projet.
+## How to Use
+1. Clone or Download the script.
+2. install the requirements from the requirements.txt 
+3. Configure the Config.ini file with your channel id,bot api and subreddits.
+4. Set the Script to run at specified intervals on your local device or cloud.
+--- 
+#####  Notes
+Cache Folder stores the ids of already fetched post inorder to avoid reposts. 
 
-## Journalisation
-Les logs sont enregistrés dans un fichier `bot.log` et affichés dans la console. Les logs incluent des informations sur les opérations réussies et les erreurs.
-
-## Déploiement
-Pour déployer le bot sur une plateforme comme Heroku, assurez-vous que toutes les variables d'environnement sont correctement configurées et que le fichier `Procfile` est présent.
-
-## Contribuer
-Les contributions sont les bienvenues ! Veuillez soumettre une pull request ou ouvrir une issue pour discuter des changements que vous souhaitez apporter.
-
-## Licence
-Ce projet est sous licence MIT. Voir le fichier [LICENSE](LICENSE) pour plus de détails.
+agniveshsp@gmail.com
